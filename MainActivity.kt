@@ -8,15 +8,16 @@ import androidx.annotation.RequiresApi
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import java.net.URLDecoder
-import androidx.compose.runtime.setValue
 
 enum class ThemeMode { Light, Dark, Custom }
+
 class MainActivity : ComponentActivity() {
 
     @RequiresApi(Build.VERSION_CODES.O)
@@ -34,7 +35,10 @@ class MainActivity : ComponentActivity() {
             MoodTrackerTheme(mode = themeMode) {
                 val nav = rememberNavController()
 
-                NavHost(navController = nav, startDestination = Dest.SignIn.route) {
+                NavHost(
+                    navController = nav,
+                    startDestination = Dest.SignIn.route
+                ) {
 
                     // ───────── Sign In ─────────
                     composable(Dest.SignIn.route) {
@@ -64,42 +68,66 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // ───────── Home (keeps optional mood/conf query) ─────────
+                    // ───────── Home (with optional mood/conf query) ─────────
                     composable(
                         route = Dest.Home.route + "?mood={mood}&conf={conf}",
                         arguments = listOf(
-                            navArgument("mood") { type = NavType.StringType; defaultValue = "" },
-                            navArgument("conf") { type = NavType.FloatType; defaultValue = 0f }
+                            navArgument("mood") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            },
+                            navArgument("conf") {
+                                type = NavType.FloatType
+                                defaultValue = 0f
+                            }
                         )
                     ) { backStackEntry ->
-                        val rawMood = backStackEntry.arguments?.getString("mood").orEmpty()
-                        val mood = try { URLDecoder.decode(rawMood, "UTF-8") } catch (_: Exception) { rawMood }
-                        val conf = backStackEntry.arguments?.getFloat("conf") ?: 0f
+                        val rawMood =
+                            backStackEntry.arguments?.getString("mood").orEmpty()
+                        val mood = try {
+                            URLDecoder.decode(rawMood, "UTF-8")
+                        } catch (_: Exception) {
+                            rawMood
+                        }
+                        val conf =
+                            backStackEntry.arguments?.getFloat("conf") ?: 0f
 
                         HomeScreen(
                             moodFromCamera = mood.takeIf { it.isNotBlank() },
                             confFromCamera = conf.takeIf { conf > 0f },
                             onCalendar = { nav.navigate(Dest.EntryRecords.route) },
-                            onTips     = { nav.navigate(Dest.Tips.route) },
-                            onProfile  = { nav.navigate(Dest.Profile.route) },
-                            onLogMood  = { nav.navigate(Dest.LogMood.route) }
+                            onTips = { nav.navigate(Dest.Tips.route) },
+                            onProfile = { nav.navigate(Dest.Profile.route) },
+                            onLogMood = { nav.navigate(Dest.LogMood.route) }
                         )
                     }
 
                     // ───────── Log Mood ─────────
                     composable(Dest.LogMood.route) {
-                        MoodLogScreen(onBack = { nav.popBackStack() })
+                        MoodLogScreen(
+                            onBack = { nav.popBackStack() }
+                        )
                     }
 
-                    // ───────── Other screens ─────────
+                    // ───────── Entry Records ─────────
                     composable(Dest.EntryRecords.route) {
-                        EntryRecordsScreen(onBack = { nav.popBackStack() })
+                        EntryRecordsScreen(
+                            onBack = { nav.popBackStack() }
+                        )
                     }
+
+                    // ───────── Tips ─────────
                     composable(Dest.Tips.route) {
-                        TipsScreen(onBack = { nav.popBackStack() })
+                        TipsScreen(
+                            onBack = { nav.popBackStack() },
+                            // When "Write it out" is tapped, go straight to MoodLogScreen
+                            onWriteOut = { nav.navigate(Dest.LogMood.route) }
+                            // onSchoolCounsellor / onSafeSpace use defaults from TipsScreen
+                        )
                     }
+
+                    // ───────── Profile ─────────
                     composable(Dest.Profile.route) {
-                        // Pass current theme + a setter so Profile can change it
                         ProfileScreen(
                             onBack = { nav.popBackStack() },
                             currentTheme = themeMode,
