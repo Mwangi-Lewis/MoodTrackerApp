@@ -120,6 +120,7 @@ dependencies {
     implementation("androidx.compose.runtime:runtime:1.7.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+    implementation("androidx.compose.material3:material3")
 
 
 
