@@ -2,10 +2,18 @@
 
 package com.example.moodtrackerapp
 
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
 import android.os.Build
+import android.provider.MediaStore
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,12 +25,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun ProfileScreen(
@@ -33,12 +45,15 @@ fun ProfileScreen(
     val auth = remember { FirebaseAuth.getInstance() }
     val db = remember { FirebaseFirestore.getInstance() }
     val uid = auth.currentUser?.uid
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    // Name/handle pulled from Auth, then Firestore fallback
+    // Username / handle
     var name by remember { mutableStateOf(auth.currentUser?.displayName ?: "") }
     var handle by remember { mutableStateOf<String?>(null) }
 
-    // Try Firestore username if displayName is blank
+    // Try fetching username
     LaunchedEffect(uid) {
         if (uid != null) {
             try {
@@ -48,18 +63,34 @@ fun ProfileScreen(
                     if (name.isBlank()) name = u
                     handle = "@$u"
                 } else if (name.isBlank()) {
-                    // final fallback: email prefix
                     val emailName = auth.currentUser?.email?.substringBefore('@').orEmpty()
                     if (emailName.isNotBlank()) {
                         name = emailName.replaceFirstChar { it.uppercase() }
                         handle = "@$emailName"
                     }
                 }
-            } catch (_: Exception) {
-                // ignore fetch errors; keep whatever we have
-            }
+            } catch (_: Exception) { }
         }
     }
+
+    // Avatar picker
+    var avatarBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    val pickImageLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            if (uri != null) {
+                try {
+                    val bmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        val src = ImageDecoder.createSource(context.contentResolver, uri)
+                        ImageDecoder.decodeBitmap(src)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+                    }
+                    avatarBitmap = bmp
+                } catch (_: Exception) { }
+            }
+        }
 
     Scaffold(
         topBar = {
@@ -74,24 +105,35 @@ fun ProfileScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { pad ->
         Column(
-            Modifier
+            modifier = Modifier
                 .fillMaxSize()
                 .padding(pad)
-                .padding(20.dp),
+                .padding(horizontal = 20.dp)
+                .padding(top = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Avatar
+            // Profile avatar
             Box(
                 modifier = Modifier
                     .size(140.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { pickImageLauncher.launch("image/*") },
                 contentAlignment = Alignment.Center
             ) {
-                Text("👤", style = MaterialTheme.typography.headlineLarge)
+                if (avatarBitmap != null) {
+                    Image(
+                        bitmap = avatarBitmap!!.asImageBitmap(),
+                        contentDescription = "Profile picture",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Text("👤", style = MaterialTheme.typography.headlineLarge)
+                }
             }
 
             Spacer(Modifier.height(16.dp))
@@ -112,7 +154,7 @@ fun ProfileScreen(
 
             Spacer(Modifier.height(28.dp))
 
-            // Theme section
+            // Theme Style section
             Text("Theme Style", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(12.dp))
 
@@ -145,6 +187,7 @@ fun ProfileScreen(
 
             Spacer(Modifier.height(28.dp))
 
+            // Preferences
             Text("Preferences", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(12.dp))
 
@@ -154,21 +197,25 @@ fun ProfileScreen(
 
             Spacer(Modifier.height(24.dp))
 
+            // Save button fixed
             Button(
                 onClick = {
-                    // Optional: persist theme choice to Firestore for this user
                     if (uid != null) {
                         val data = mapOf("theme" to currentTheme.name)
                         db.collection("users").document(uid)
                             .set(data, SetOptions.merge())
                     }
+                    scope.launch {
+                        snackbarHostState.showSnackbar("Preferences saved")
+                    }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp),
-                shape = RoundedCornerShape(22.dp)
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD6C4FF))
             ) {
-                Text("Save Changes")
+                Text("Save Changes", color = Color.Black)
             }
         }
     }
