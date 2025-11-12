@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.example.moodtrackerapp
 
 import android.Manifest
@@ -8,11 +10,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AttachFile
@@ -21,49 +19,59 @@ import androidx.compose.material.icons.outlined.FormatItalic
 import androidx.compose.material.icons.outlined.FormatUnderlined
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material3.*
+import androidx.compose.material3.BottomAppBar
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AssistChip
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import com.google.firebase.Timestamp
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
-
+import java.util.Date
 @Composable
 fun MoodLogScreen(
     onBack: () -> Unit,
+    // still expose callback if parent wants it, but we also save internally
     onSave: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val repo = remember { MoodRepository() }
+    val scope = rememberCoroutineScope()
 
-    // UI state
-    var title by remember { mutableStateOf(TextFieldValue("Title")) }
-    var subtitle by remember { mutableStateOf(TextFieldValue("Subtitle")) }
+    // ---- state ----
+    var title by remember { mutableStateOf(TextFieldValue("")) }
+    var subtitle by remember { mutableStateOf(TextFieldValue("")) }
     var note by remember { mutableStateOf(TextFieldValue("")) }
 
-    // Get current date and time when screen loads
+    // current date/time at open
     val currentDate = remember {
         SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date())
     }
     val currentTime = remember {
         SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
     }
-
-// Initialize with current values
     var date by remember { mutableStateOf(currentDate) }
     var time by remember { mutableStateOf(currentTime) }
-
 
     // mic
     var isListening by remember { mutableStateOf(false) }
@@ -82,38 +90,99 @@ fun MoodLogScreen(
         }
     }
 
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
     Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = {
+                    Text(
+                        text = if (title.text.isBlank()) "Title" else title.text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.Outlined.ArrowBack,
+                            contentDescription = "Back"
+                        )
+                    }
+                },
+                actions = {
+                    TextButton(
+                        onClick = {
+                            if (saving) return@TextButton
+                            saving = true
+                            error = null
+
+                            scope.launch {
+                                try {
+                                    // Store as a MoodEntry. If your MoodEntry has more fields,
+                                    // add them here. Title becomes the "mood label", note is
+                                    // what you actually typed.
+                                    val entry = MoodEntry(
+                                        mood = if (title.text.isNotBlank())
+                                            title.text
+                                        else
+                                            "Mood log",
+                                        score = 0,
+                                        createdAt = Timestamp.now()
+                                    )
+                                    repo.addMood(entry)
+
+                                    // Also forward raw text up if parent cares
+                                    onSave(note.text)
+
+                                    // Go back after successful save
+                                    onBack()
+                                } catch (e: Exception) {
+                                    error = e.message ?: "Failed to save mood."
+                                } finally {
+                                    saving = false
+                                }
+                            }
+                        }
+                    ) {
+                        Text(if (saving) "Saving..." else "Save")
+                    }
+                }
+            )
+        },
         bottomBar = {
             BottomAppBar(
                 tonalElevation = 0.dp,
                 containerColor = Color.Transparent
             ) {
-                // I, U, attach, delete, mic — labels hidden (just like your mock)
                 NavigationBarItem(
                     selected = false,
-                    onClick = { /* italic behavior (optional) */ },
+                    onClick = { /* TODO italic styling */ },
                     icon = { Icon(Icons.Outlined.FormatItalic, contentDescription = "Italic") },
                     label = { Text("I") }
                 )
                 NavigationBarItem(
                     selected = false,
-                    onClick = { /* underline behavior (optional) */ },
+                    onClick = { /* TODO underline styling */ },
                     icon = { Icon(Icons.Outlined.FormatUnderlined, contentDescription = "Underline") },
                     label = { Text("U") }
                 )
                 NavigationBarItem(
                     selected = false,
-                    onClick = { /* attach behavior (optional) */ },
+                    onClick = { /* TODO attach file */ },
                     icon = { Icon(Icons.Outlined.AttachFile, contentDescription = "Attach") },
                     label = { Text("") }
                 )
                 NavigationBarItem(
                     selected = false,
-                    onClick = { /* delete behavior (optional) */ },
-                    icon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete") },
+                    onClick = { note = TextFieldValue("") },
+                    icon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = "Clear") },
                     label = { Text("") }
                 )
+
                 Spacer(Modifier.weight(1f))
+
                 NavigationBarItem(
                     selected = isListening,
                     onClick = {
@@ -125,8 +194,10 @@ fun MoodLogScreen(
                         Icon(
                             imageVector = Icons.Outlined.Mic,
                             contentDescription = "Voice to text",
-                            tint = if (isListening) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurface
+                            tint = if (isListening)
+                                MaterialTheme.colorScheme.primary
+                            else
+                                MaterialTheme.colorScheme.onSurface
                         )
                     },
                     label = { Text("") }
@@ -138,80 +209,64 @@ fun MoodLogScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(pad)
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.Top
         ) {
+            Spacer(Modifier.height(16.dp))
 
-            // Top bar row (back, placeholders, title/subtitle, quick icons)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Outlined.ArrowBack, contentDescription = "Back")
-                }
+            // ---- Title field (drives top bar title) ----
+            ClearTextField(
+                value = title,
+                onValueChange = { title = it },
+                placeholder = "Title",
+                textStyle = MaterialTheme.typography.titleMedium,
+                singleLine = true
+            )
 
-                // Two “square” placeholders
-                PlaceholderIcon()
-                PlaceholderIcon()
+            Spacer(Modifier.height(8.dp))
 
-                // Title & subtitle stacked
-                Column(modifier = Modifier.weight(1f)) {
-                    BasicTextFieldM3(
-                        value = title,
-                        onValueChange = { title = it },
-                        textStyle = MaterialTheme.typography.titleMedium
-                    )
-                    BasicTextFieldM3(
-                        value = subtitle,
-                        onValueChange = { subtitle = it },
-                        textStyle = MaterialTheme.typography.labelMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    )
-                }
-
-                // Two small round icons on the right (as in the mock)
-                SmallHollowCircle()
-                SmallHollowCircle()
-
-                // Star icon at far right
-                Icon(
-                    imageVector = Icons.Outlined.StarBorder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
-            }
+            // ---- Subtitle ----
+            ClearTextField(
+                value = subtitle,
+                onValueChange = { subtitle = it },
+                placeholder = "Subtitle",
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                singleLine = true
+            )
 
             Spacer(Modifier.height(16.dp))
 
-            // Date & Time chips
+            // ---- Date & Time chips ----
+            // ---- Date & Time chips ----
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 AssistChip(
-                    onClick = { /* show date picker if desired */ },
+                    onClick = { /* TODO: hook up date picker later */ },
                     label = { Text(date) }
                 )
+
                 AssistChip(
-                    onClick = { /* show time picker if desired */ },
+                    onClick = { /* TODO: hook up time picker later */ },
                     label = { Text(time) }
                 )
             }
 
-            // Divider line
             Spacer(Modifier.height(16.dp))
-            Divider(thickness = 1.dp, color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+            Divider(
+                thickness = 1.dp,
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+            )
 
-            // Big note area with “Log your Mood” placeholder
+            // ---- Note body ----
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(top = 24.dp)
+                    .padding(top = 20.dp)
             ) {
                 if (note.text.isBlank()) {
                     Text(
@@ -220,15 +275,17 @@ fun MoodLogScreen(
                         fontSize = 18.sp
                     )
                 }
-                BasicTextFieldM3(
+                ClearTextField(
                     value = note,
                     onValueChange = { note = it },
+                    placeholder = "",
                     textStyle = TextStyle(fontSize = 18.sp),
+                    singleLine = false,
                     modifier = Modifier.fillMaxSize()
                 )
             }
 
-            // Bottom-right “Need some help?” text and small star
+            // ---- Optional helper bottom-right ----
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -247,6 +304,14 @@ fun MoodLogScreen(
             }
 
             Spacer(Modifier.height(8.dp))
+
+            if (error != null) {
+                Text(
+                    text = error!!,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
     }
 }
@@ -254,39 +319,12 @@ fun MoodLogScreen(
 /* ----------------------------- helpers ------------------------------ */
 
 @Composable
-private fun PlaceholderIcon() {
-    Box(
-        modifier = Modifier
-            .size(28.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .border(
-                BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                RoundedCornerShape(6.dp)
-            )
-    )
-}
-
-@Composable
-private fun SmallHollowCircle() {
-    Box(
-        modifier = Modifier
-            .size(28.dp)
-            .clip(CircleShape)
-            .border(
-                BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                CircleShape
-            )
-    )
-}
-
-/**
- * Minimal “no decoration” text field using Material 3 colors/typography.
- */
-@Composable
-private fun BasicTextFieldM3(
+private fun ClearTextField(
     value: TextFieldValue,
     onValueChange: (TextFieldValue) -> Unit,
+    placeholder: String,
     textStyle: TextStyle,
+    singleLine: Boolean,
     modifier: Modifier = Modifier
 ) {
     TextField(
@@ -294,14 +332,18 @@ private fun BasicTextFieldM3(
         value = value,
         onValueChange = onValueChange,
         textStyle = textStyle,
-        singleLine = false,
+        singleLine = singleLine,
+        placeholder = {
+            if (placeholder.isNotEmpty()) Text(placeholder)
+        },
         colors = TextFieldDefaults.colors(
             unfocusedContainerColor = Color.Transparent,
             focusedContainerColor = Color.Transparent,
             disabledContainerColor = Color.Transparent,
             focusedIndicatorColor = Color.Transparent,
             unfocusedIndicatorColor = Color.Transparent,
-            disabledIndicatorColor = Color.Transparent
+            disabledIndicatorColor = Color.Transparent,
+            cursorColor = MaterialTheme.colorScheme.primary
         )
     )
 }
@@ -343,7 +385,9 @@ private fun startListening(
 
         override fun onPartialResults(partialResults: Bundle) {
             val list = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            list?.firstOrNull()?.takeIf { it.isNotBlank() }?.let(onResult)
+            list?.firstOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?.let(onResult)
         }
 
         override fun onEvent(eventType: Int, params: Bundle?) {}
