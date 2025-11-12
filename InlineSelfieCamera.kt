@@ -4,19 +4,12 @@ package com.example.moodtrackerapp
 
 import android.Manifest
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
-import android.graphics.Matrix
-import android.graphics.Rect
-import android.util.Size
+import android.graphics.*
+import android.util.Log
 import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.*
@@ -29,16 +22,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetector
-import com.google.mlkit.vision.face.FaceDetectorOptions
-import android.util.Log
+import com.google.mlkit.vision.face.*
 import java.io.ByteArrayOutputStream
+import kotlin.math.max
+import kotlin.math.min
 
-/**
- * Small inline camera composable to capture and classify mood directly from the Home screen.
- * Uses CameraX + ML Kit Face Detection + TensorFlow Lite (EmotionClassifier).
- */
+private const val TAG = "InlineSelfie"
+
+// ───────────────────────── Public composable ─────────────────────────
+
 @Composable
 fun InlineSelfieCamera(
     modifier: Modifier = Modifier,
@@ -46,34 +38,47 @@ fun InlineSelfieCamera(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
+
+    // Request camera permission once
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* optionally show message if denied */ }
-    LaunchedEffect(Unit) { permissionLauncher.launch(Manifest.permission.CAMERA) }
+    ) { granted ->
+        if (!granted) {
+            // if denied, just close for now
+            onClose()
+        }
+    }
+    LaunchedEffect(Unit) {
+        permissionLauncher.launch(Manifest.permission.CAMERA)
+    }
 
-    // TFLite classifier (must implement classify(bitmap): Pair<String, Float>)
+    // Emotion classifier
     val classifier = remember { EmotionClassifier(context) }
     DisposableEffect(Unit) { onDispose { classifier.close() } }
 
-    // Friendlier/forgiving FaceDetector
-    val faceDetector: FaceDetector = remember {
-        val opts = FaceDetectorOptions.Builder()
+    // ML Kit face detector
+    val faceDetector = remember {
+        val options = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
             .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-            .setMinFaceSize(0.1f) // 10% of image height
+            .setMinFaceSize(0.15f)
+            .enableTracking()
             .build()
-        FaceDetection.getClient(opts)
+        FaceDetection.getClient(options)
     }
     DisposableEffect(Unit) { onDispose { faceDetector.close() } }
 
+    var status by remember { mutableStateOf("Looking for your face…") }
     var latestMood by remember { mutableStateOf<String?>(null) }
     var latestConf by remember { mutableStateOf<Float?>(null) }
     var hasFace by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("Looking for your face…") }
 
     Surface(tonalElevation = 2.dp) {
-        Column(modifier.padding(12.dp)) {
+        Column(
+            modifier
+                .padding(12.dp)
+        ) {
             Text("Selfie Camera", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
 
@@ -84,13 +89,16 @@ fun InlineSelfieCamera(
                 faceDetector = faceDetector,
                 classifier = classifier,
                 onFaceEmotion = { mood, conf ->
+                    // Called only when a face AND prediction exist
+                    hasFace = true
                     latestMood = mood
                     latestConf = conf
-                    hasFace = true
-                    status = "Detected: $mood (${((conf) * 100).toInt()}%)"
+                    status = "Detected: $mood (${(conf * 100).toInt()}%)"
                 },
                 onNoFace = {
                     hasFace = false
+                    latestMood = null
+                    latestConf = null
                     status = "Looking for your face…"
                 }
             )
@@ -103,13 +111,20 @@ fun InlineSelfieCamera(
                 OutlinedButton(onClick = onClose) { Text("Cancel") }
                 Button(
                     enabled = hasFace && latestMood != null && latestConf != null,
-                    onClick = { onResult(latestMood ?: "neutral", latestConf ?: 0f) }
-                ) { Text("Use Result") }
+                    onClick = {
+                        onResult(latestMood ?: "neutral", latestConf ?: 0f)
+                    }
+                ) {
+                    Text("Use Result")
+                }
             }
         }
     }
 }
 
+// ─────────────────────── Camera / Analyzer view ───────────────────────
+
+@androidx.annotation.OptIn(ExperimentalGetImage::class)
 @Composable
 private fun CameraPreviewInline(
     modifier: Modifier,
@@ -132,13 +147,14 @@ private fun CameraPreviewInline(
                 scaleType = PreviewView.ScaleType.FILL_CENTER
             }
 
-            val providerFuture = ProcessCameraProvider.getInstance(ctx)
+            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
             val executor = ContextCompat.getMainExecutor(ctx)
 
-            providerFuture.addListener({
-                val provider = providerFuture.get()
+            cameraProviderFuture.addListener({
+                val cameraProvider = cameraProviderFuture.get()
+
                 try {
-                    provider.unbindAll()
+                    cameraProvider.unbindAll()
 
                     val selector = CameraSelector.Builder()
                         .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
@@ -148,54 +164,56 @@ private fun CameraPreviewInline(
                         it.setSurfaceProvider(previewView.surfaceProvider)
                     }
 
-                    // Force YUV so proxy.image is available reliably
                     val analysis = ImageAnalysis.Builder()
-                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                         .build()
 
                     val converter = YuvToRgbConverter(ctx)
 
-                    var lastTs = 0L
-                    val MIN_GAP_MS = 250L
+                    var lastSuccessTs = 0L
 
                     analysis.setAnalyzer(executor) { proxy ->
-                        val now = System.currentTimeMillis()
-                        if (now - lastTs < MIN_GAP_MS) {
+                        val media = proxy.image
+                        if (media == null) {
                             proxy.close()
                             return@setAnalyzer
                         }
-                        lastTs = now
 
-                        // Safely get MediaImage
-                        val media = proxy.image ?: run {
-                            Log.d("SelfieCam", "proxy.image == null")
-                            proxy.close()
-                            return@setAnalyzer
-                        }
                         val rotation = proxy.imageInfo.rotationDegrees
-                        val input = InputImage.fromMediaImage(media, rotation)
+                        val image = InputImage.fromMediaImage(media, rotation)
 
-                        // One ML Kit call; close proxy only when finished
-                        faceDetector.process(input)
+                        faceDetector.process(image)
                             .addOnSuccessListener { faces ->
                                 if (faces.isNotEmpty()) {
-                                    Log.d("SelfieCam", "Faces detected: ${faces.size}")
+                                    // basic throttle: only classify every ~400ms
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastSuccessTs < 400L) {
+                                        // still considered "face found"; don't spam onNoFace
+                                        return@addOnSuccessListener
+                                    }
+                                    lastSuccessTs = now
+
+                                    val face = faces.first()
                                     try {
-                                        val bmp = proxy.toBitmap(converter).rotate(rotation)
-                                        val (mood, conf) = classifier.classify(bmp)
-                                        onFaceEmotion(mood, conf)
+                                        val frameBitmap =
+                                            proxy.toBitmap(converter).rotate(rotation)
+                                        val faceBitmap =
+                                            cropFace(frameBitmap, face.boundingBox)
+
+                                        val (label, conf) = classifier.classify(faceBitmap)
+                                        Log.d(TAG, "Face ok -> $label ($conf)")
+                                        onFaceEmotion(label, conf)
                                     } catch (e: Exception) {
-                                        Log.w("SelfieCam", "Classify failed: ${e.message}")
+                                        Log.w(TAG, "Crop/classify failed: ${e.message}", e)
                                         onNoFace()
                                     }
                                 } else {
-                                    Log.d("SelfieCam", "No face")
                                     onNoFace()
                                 }
                             }
                             .addOnFailureListener { e ->
-                                Log.w("SelfieCam", "Detector error: ${e.message}")
+                                Log.w(TAG, "Detector error: ${e.message}", e)
                                 onNoFace()
                             }
                             .addOnCompleteListener {
@@ -203,9 +221,14 @@ private fun CameraPreviewInline(
                             }
                     }
 
-                    provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
-                } catch (_: Exception) {
-                    // ignore binding failures gracefully
+                    cameraProvider.bindToLifecycle(
+                        lifecycleOwner,
+                        selector,
+                        preview,
+                        analysis
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "bindToLifecycle failed: ${e.message}", e)
                 }
             }, executor)
 
@@ -214,21 +237,30 @@ private fun CameraPreviewInline(
     )
 }
 
-/* ---------- YUV → Bitmap conversion + rotation helpers ---------- */
+// ─────────────────────── Helpers: YUV → Bitmap, crop ───────────────────────
 
 private class YuvToRgbConverter(private val context: Context) {
     fun yuvToRgb(image: ImageProxy, out: Bitmap) {
         val nv21 = yuv420888ToNv21(image)
         @Suppress("DEPRECATION")
         val yuvImage = android.graphics.YuvImage(
-            nv21, ImageFormat.NV21, image.width, image.height, null
+            nv21,
+            ImageFormat.NV21,
+            image.width,
+            image.height,
+            null
         )
         val outStream = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 100, outStream)
+        yuvImage.compressToJpeg(
+            Rect(0, 0, image.width, image.height),
+            100,
+            outStream
+        )
         val jpeg = outStream.toByteArray()
-        val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
-        android.graphics.Canvas(out).drawBitmap(decoded, 0f, 0f, null)
-        decoded.recycle()
+        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+        val canvas = Canvas(out)
+        canvas.drawBitmap(bmp, 0f, 0f, null)
+        bmp.recycle()
     }
 
     private fun yuv420888ToNv21(image: ImageProxy): ByteArray {
@@ -241,23 +273,31 @@ private class YuvToRgbConverter(private val context: Context) {
         val vSize = vBuffer.remaining()
 
         val nv21 = ByteArray(ySize + uSize + vSize)
+
         yBuffer.get(nv21, 0, ySize)
 
         val chromaRowStride = image.planes[1].rowStride
-        val rowPadding = chromaRowStride - image.width / 2
-        var offset = ySize
+        val chromaRowPadding = chromaRowStride - image.width / 2
 
-        if (rowPadding == 0) {
-            vBuffer.get(nv21, offset, vSize); offset += vSize
+        var offset = ySize
+        if (chromaRowPadding == 0) {
+            vBuffer.get(nv21, offset, vSize)
+            offset += vSize
             uBuffer.get(nv21, offset, uSize)
         } else {
             for (row in 0 until image.height / 2) {
-                vBuffer.get(nv21, offset, image.width / 2); offset += image.width / 2
-                if (row < image.height / 2 - 1) vBuffer.position(vBuffer.position() + rowPadding)
+                vBuffer.get(nv21, offset, image.width / 2)
+                offset += image.width / 2
+                if (row < image.height / 2 - 1) {
+                    vBuffer.position(vBuffer.position() + chromaRowPadding)
+                }
             }
             for (row in 0 until image.height / 2) {
-                uBuffer.get(nv21, offset, image.width / 2); offset += image.width / 2
-                if (row < image.height / 2 - 1) uBuffer.position(uBuffer.position() + rowPadding)
+                uBuffer.get(nv21, offset, image.width / 2)
+                offset += image.width / 2
+                if (row < image.height / 2 - 1) {
+                    uBuffer.position(uBuffer.position() + chromaRowPadding)
+                }
             }
         }
         return nv21
@@ -265,15 +305,27 @@ private class YuvToRgbConverter(private val context: Context) {
 }
 
 private fun ImageProxy.toBitmap(converter: YuvToRgbConverter): Bitmap {
-    val bmp = Bitmap.createBitmap(this.width, this.height, Bitmap.Config.ARGB_8888)
+    val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     converter.yuvToRgb(this, bmp)
     return bmp
 }
 
 private fun Bitmap.rotate(degrees: Int): Bitmap {
     if (degrees == 0) return this
-    val m = Matrix().apply { postRotate(degrees.toFloat()) }
-    val rotated = Bitmap.createBitmap(this, 0, 0, width, height, m, true)
-    if (rotated !== this) this.recycle()
+    val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+    val rotated = Bitmap.createBitmap(this, 0, 0, width, height, matrix, true)
+    if (rotated != this) recycle()
     return rotated
+}
+
+private fun cropFace(source: Bitmap, box: Rect): Bitmap {
+    val left = max(0, box.left)
+    val top = max(0, box.top)
+    val right = min(source.width, box.right)
+    val bottom = min(source.height, box.bottom)
+
+    val w = max(1, right - left)
+    val h = max(1, bottom - top)
+
+    return Bitmap.createBitmap(source, left, top, w, h)
 }
