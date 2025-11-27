@@ -10,7 +10,10 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AttachFile
@@ -23,6 +26,7 @@ import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -44,24 +48,39 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.firebase.Timestamp
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.Date
 @Composable
 fun MoodLogScreen(
     onBack: () -> Unit,
-    // still expose callback if parent wants it, but we also save internally
+    // Called after a successful save so the parent (NavHost) can
+    // navigate back to Home and refresh the mood log section.
     onSave: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val repo = remember { MoodRepository() }
     val scope = rememberCoroutineScope()
+    val auth = remember { FirebaseAuth.getInstance() }
+    val firestore = remember { FirebaseFirestore.getInstance() }
 
     // ---- state ----
     var title by remember { mutableStateOf(TextFieldValue("")) }
     var subtitle by remember { mutableStateOf(TextFieldValue("")) }
     var note by remember { mutableStateOf(TextFieldValue("")) }
+
+    // Derived from speech-to-text / typed keywords
+    var detectedMood by remember { mutableStateOf<String?>(null) }
+    var supportMessage by remember { mutableStateOf<String?>(null) }
+
+    // Debounced analysis state for typed input
+    var isAnalyzing by remember { mutableStateOf(false) }
+    var lastAnalyzedText by remember { mutableStateOf("") }
 
     // current date/time at open
     val currentDate = remember {
@@ -82,12 +101,52 @@ fun MoodLogScreen(
             startListening(
                 context = context,
                 onStart = { isListening = true },
-                onResult = { text -> note = TextFieldValue(text) },
+                onResult = { text ->
+                    // Keep full transcript as the note content for logging
+                    note = TextFieldValue(text)
+
+                    // Analyze spoken text for emotional keywords
+                    val (mood, message) = analyzeSpeechForMoodAndSupport(text)
+                    detectedMood = mood
+                    supportMessage = message
+
+                    // Optionally, surface the mood in the title for quick glance
+                    if (!mood.isNullOrBlank() && title.text.isBlank()) {
+                        title = TextFieldValue("Feeling ${mood.replaceFirstChar { it.uppercase() }}")
+                    }
+                },
                 onEnd = { isListening = false }
             )
         } else {
             isListening = false
         }
+    }
+
+    // Debounced analysis of whatever is in the note field (typed or dictated).
+    LaunchedEffect(note.text) {
+        val current = note.text.trim()
+
+        // If user clears the text, clear any previous guidance.
+        if (current.isEmpty()) {
+            detectedMood = null
+            supportMessage = null
+            isAnalyzing = false
+            lastAnalyzedText = ""
+            return@LaunchedEffect
+        }
+
+        isAnalyzing = true
+        val startSnapshot = note.text
+        delay(1500L) // wait to see if user keeps typing
+
+        // Only continue if the text has not changed during the debounce window
+        if (startSnapshot == note.text && current != lastAnalyzedText) {
+            val (mood, message) = analyzeSpeechForMoodAndSupport(current)
+            detectedMood = mood
+            supportMessage = message
+            lastAnalyzedText = current
+        }
+        isAnalyzing = false
     }
 
     var saving by remember { mutableStateOf(false) }
@@ -120,6 +179,9 @@ fun MoodLogScreen(
 
                             scope.launch {
                                 try {
+                                    // Use a single timestamp for both the mood entry and the saved log
+                                    val ts = Timestamp.now()
+
                                     // Store as a MoodEntry. If your MoodEntry has more fields,
                                     // add them here. Title becomes the "mood label", note is
                                     // what you actually typed.
@@ -129,15 +191,49 @@ fun MoodLogScreen(
                                         else
                                             "Mood log",
                                         score = 0,
-                                        createdAt = Timestamp.now()
+                                        note = note.text,
+                                        createdAt = ts
                                     )
                                     repo.addMood(entry)
 
-                                    // Also forward raw text up if parent cares
-                                    onSave(note.text)
+                                    // Save a summary card so it shows in HomeScreen "Mood log" list
+                                    val uid = auth.currentUser?.uid
+                                    if (uid != null && note.text.isNotBlank()) {
+                                        val moodLabel = (detectedMood ?: title.text).ifBlank { "reflection" }
+                                        val summary = if (note.text.length > 60)
+                                            note.text.take(60) + "..."
+                                        else
+                                            note.text
 
-                                    // Go back after successful save
-                                    onBack()
+                                        val detail = buildString {
+                                            append("Mood: ")
+                                            append(moodLabel.replaceFirstChar { it.uppercase() })
+                                            append("\n\nWhat you wrote:\n")
+                                            append(note.text)
+                                            if (!supportMessage.isNullOrBlank()) {
+                                                append("\n\nSupport message:\n")
+                                                append(supportMessage)
+                                            }
+                                        }
+
+                                        val docRef = firestore.collection("chatLogs").document()
+                                        val data = mapOf(
+                                            "userId" to uid,
+                                            "mood" to moodLabel.lowercase(),
+                                            "createdAt" to ts,
+                                            "summary" to summary,
+                                            "detail" to detail
+                                        )
+                                        // Wait for Firestore write so that HomeScreen, which
+                                        // reloads chatLogs on navigation, can immediately see
+                                        // this new document.
+                                        docRef.set(data).await()
+                                    }
+
+                                    // Now tell the parent that we saved successfully. The
+                                    // parent (NavHost) will typically navigate back to Home
+                                    // so the new mood log card appears immediately.
+                                    onSave(note.text)
                                 } catch (e: Exception) {
                                     error = e.message ?: "Failed to save mood."
                                 } finally {
@@ -209,7 +305,9 @@ fun MoodLogScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(pad)
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState())
+                .imePadding(),
             verticalArrangement = Arrangement.Top
         ) {
             Spacer(Modifier.height(16.dp))
@@ -264,8 +362,8 @@ fun MoodLogScreen(
             // ---- Note body ----
             Box(
                 modifier = Modifier
-                    .weight(1f)
                     .fillMaxWidth()
+                    .heightIn(min = 160.dp)
                     .padding(top = 20.dp)
             ) {
                 if (note.text.isBlank()) {
@@ -281,25 +379,80 @@ fun MoodLogScreen(
                     placeholder = "",
                     textStyle = TextStyle(fontSize = 18.sp),
                     singleLine = false,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp)
                 )
             }
 
-            // ---- Optional helper bottom-right ----
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.StarBorder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(Modifier.width(8.dp))
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("Need some", style = MaterialTheme.typography.bodySmall)
-                    Text("help?", style = MaterialTheme.typography.bodySmall)
+            // Small "processing" indicator when analyzing typed / spoken text
+            if (isAnalyzing) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Processing what you wrote…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // ---- Optional helper bottom-right / rule-based support ----
+            if (!supportMessage.isNullOrBlank()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    Text(
+                        text = detectedMood?.let { "Based on what you said, you may be feeling ${it.lowercase()}." }
+                            ?: "Here's a little support based on what you shared:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = supportMessage!!,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            if (note.text.isNotBlank()) {
+                                val (mood, message) = analyzeSpeechForMoodAndSupport(note.text)
+                                detectedMood = mood
+                                supportMessage = message
+                            }
+                        },
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.StarBorder,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Need some", style = MaterialTheme.typography.bodySmall)
+                        Text("help?", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
 
@@ -346,6 +499,70 @@ private fun ClearTextField(
             cursorColor = MaterialTheme.colorScheme.primary
         )
     )
+}
+
+// Simple rule-based keyword detector + support generator for speech-to-text input.
+// This runs entirely on-device and does not require network, to keep things
+// fast and inclusive for students who prefer (or need) to use their voice.
+private fun analyzeSpeechForMoodAndSupport(text: String): Pair<String?, String?> {
+    val normalized = text.lowercase()
+
+    // You can expand this list with more university/life-related words.
+    val keywordBuckets: Map<String, List<String>> = mapOf(
+        "sad" to listOf("sad", "down", "lonely", "depressed", "cry", "crying", "unhappy", "empty"),
+        "stressed" to listOf("stressed", "stress", "overwhelmed", "pressure", "burnt out", "burnout", "too much work"),
+        "anxious" to listOf("anxious", "anxiety", "worried", "worry", "nervous", "scared"),
+        "tired" to listOf("tired", "exhausted", "sleepy", "drained", "fatigued", "no energy"),
+        "angry" to listOf("angry", "mad", "frustrated", "annoyed", "irritated"),
+        "happy" to listOf("happy", "good", "great", "excited", "grateful", "proud", "motivated"),
+        "lonely" to listOf("lonely", "alone", "isolated"),
+        "unmotivated" to listOf("unmotivated", "can’t focus", "cant focus", "don’t feel like", "dont feel like")
+    )
+
+    // Count how many keywords from each bucket appear in the text
+    val scores = mutableMapOf<String, Int>()
+    for ((mood, words) in keywordBuckets) {
+        var count = 0
+        for (w in words) {
+            if (normalized.contains(w)) count++
+        }
+        if (count > 0) scores[mood] = count
+    }
+
+    if (scores.isEmpty()) {
+        // No clear emotional keywords found – keep the log but don't force a label.
+        return null to null
+    }
+
+    val (bestMood, _) = scores.maxBy { it.value }
+
+    val support = when (bestMood) {
+        "sad", "lonely" ->
+            "It sounds like things feel heavy right now. You deserve kindness and rest — even small steps like talking to a friend, taking a short walk, or just breathing for a moment can help. You’re not alone in feeling this way."
+
+        "stressed" ->
+            "You’re carrying a lot. Try breaking what’s on your mind into one or two small next steps. It’s okay to pause, say no to extra pressure, and look after your wellbeing first."
+
+        "anxious" ->
+            "Feeling anxious doesn’t mean you’re failing — it means your mind is trying to protect you. Notice one thing you can control right now, and remember you don’t have to solve everything at once."
+
+        "tired" ->
+            "Your body and mind sound tired. Rest is not a reward, it’s a basic need. Even a short break, a glass of water, or logging off for a bit is a valid step toward taking care of yourself."
+
+        "angry" ->
+            "It makes sense to feel angry when things feel unfair or out of control. Try to give yourself a safe outlet — journaling, movement, or deep breaths — before you decide what to do next."
+
+        "unmotivated" ->
+            "Motivation naturally goes up and down. Instead of waiting to ‘feel ready’, try picking one very small, doable action. Finishing that can gently restart your momentum."
+
+        "happy" ->
+            "It’s great that you’re feeling some positive energy. Noticing what went well today — even small wins — can help you come back to this feeling on harder days."
+
+        else ->
+            "Thank you for putting your feelings into words. Whatever you’re experiencing is valid, and taking a moment to reflect like this is already a strong step toward caring for yourself."
+    }
+
+    return bestMood to support
 }
 
 /**
