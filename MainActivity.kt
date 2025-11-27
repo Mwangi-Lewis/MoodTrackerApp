@@ -105,7 +105,14 @@ class MainActivity : ComponentActivity() {
                     // ───────── Log Mood ─────────
                     composable(Dest.LogMood.route) {
                         MoodLogScreen(
-                            onBack = { nav.popBackStack() }
+                            onBack = { nav.popBackStack() },
+                            onSave = {
+                                // After saving, go back to Home and rebuild it so
+                                // the new mood log card appears immediately.
+                                nav.navigate(Dest.Home.route) {
+                                    popUpTo(Dest.Home.route) { inclusive = true }
+                                }
+                            }
                         )
                     }
 
