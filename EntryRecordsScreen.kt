@@ -1,19 +1,16 @@
 @file:OptIn(ExperimentalMaterial3Api::class)
 
 package com.example.moodtrackerapp
-import androidx.compose.material3.ExperimentalMaterial3Api
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.Surface
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,7 +24,6 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 
 @Composable
 fun EntryRecordsScreen(
@@ -39,19 +35,24 @@ fun EntryRecordsScreen(
     var last7 by remember { mutableStateOf<List<MoodEntry>>(emptyList()) }
     var monthly by remember { mutableStateOf<Map<Int, MoodEntry?>>(emptyMap()) }
 
-    // Load data once
     LaunchedEffect(Unit) {
         scope.launch {
+            // For the "Last 7 days" list
             val entries7 = repo.last7()
             last7 = entries7
 
-            // Build map: day-of-month -> latest entry that day
+            // For the calendar: load *all* moods for the current month
             val cal = Calendar.getInstance()
+            val year = cal.get(Calendar.YEAR)
+            val month = cal.get(Calendar.MONTH)
+            val monthEntries = repo.entriesForMonth(year, month)
+
             val byDay = mutableMapOf<Int, MoodEntry>()
-            entries7.forEach { e ->
+            monthEntries.forEach { e ->
                 cal.time = e.createdAt.toDate()
                 val day = cal.get(Calendar.DAY_OF_MONTH)
                 val existing = byDay[day]
+                // Keep the latest mood logged for that calendar day
                 if (existing == null || e.createdAt > existing.createdAt) {
                     byDay[day] = e
                 }
@@ -67,17 +68,17 @@ fun EntryRecordsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())   // <-- scroll here
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
 
-            // Top bar row
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
             ) {
                 IconButton(onClick = onBack) {
                     Icon(
-                        imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "Back",
                         tint = MaterialTheme.colorScheme.onBackground
                     )
@@ -128,11 +129,14 @@ fun EntryRecordsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     } else {
-                        LazyColumn(
+                        // We only ever show up to 7 items here, so a simple Column
+                        // avoids nested scrollable components (LazyColumn inside
+                        // a verticallyScroll() parent), which can crash.
+                        Column(
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            items(last7) { entry ->
+                            last7.forEach { entry ->
                                 Last7Row(entry = entry)
                             }
                         }
@@ -174,6 +178,8 @@ fun EntryRecordsScreen(
                     LegendRow()
                 }
             }
+
+            Spacer(Modifier.height(16.dp))
         }
     }
 }
@@ -199,13 +205,17 @@ private fun Last7Row(entry: MoodEntry) {
             Text(
                 text = dateStr,
                 style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    // 👇 force dark text so it’s readable on the light card
+                    color = Color(0xFF222222)
                 )
             )
             Text(
                 text = entry.mood.replaceFirstChar { it.uppercase() },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                style = MaterialTheme.typography.bodySmall.copy(
+                    // 👇 also use dark grey here
+                    color = Color(0xFF555555)
+                )
             )
         }
         Text(
@@ -223,13 +233,12 @@ private fun CalendarGrid(
 ) {
     val cal = remember { Calendar.getInstance() }
     val year = cal.get(Calendar.YEAR)
-    val month = cal.get(Calendar.MONTH) // 0-based
+    val month = cal.get(Calendar.MONTH)
     cal.set(year, month, 1)
 
     val daysInMonth = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
-    val startDayOfWeek = cal.get(Calendar.DAY_OF_WEEK) // 1 = Sunday
+    val startDayOfWeek = cal.get(Calendar.DAY_OF_WEEK)
 
-    // Weekday labels
     val weekdays = listOf("S", "M", "T", "W", "T", "F", "S")
 
     Row(
@@ -250,7 +259,7 @@ private fun CalendarGrid(
     Spacer(Modifier.height(8.dp))
 
     var day = 1
-    val firstColumnIndex = (startDayOfWeek - Calendar.SUNDAY) // 0..6
+    val firstColumnIndex = (startDayOfWeek - Calendar.SUNDAY)
 
     Column {
         while (day <= daysInMonth) {
@@ -260,7 +269,6 @@ private fun CalendarGrid(
             ) {
                 for (col in 0..6) {
                     val cellDay = when {
-                        // first row offset
                         day == 1 && col < firstColumnIndex -> null
                         day > daysInMonth -> null
                         else -> day++
@@ -367,8 +375,3 @@ private fun moodTint(mood: String): Color = when (mood.lowercase()) {
 
 private fun Date.fmt(pattern: String): String =
     SimpleDateFormat(pattern, Locale.getDefault()).format(this)
-
-private fun Date.fmt(p: String) = SimpleDateFormat(p, Locale.getDefault()).format(this)
-private fun emoji(mood:String) = when(mood) {
-    "happy"->"😊"; "sad"->"😢"; "angry"->"😠"; "tired"->"🥱"; else->"😐"
-}
