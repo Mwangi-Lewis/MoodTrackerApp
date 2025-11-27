@@ -160,8 +160,9 @@ fun ProfileScreen(
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                Spacer(Modifier.weight(0.2f))
                 ThemeCard(
                     title = "Light",
                     emoji = "🌞",
@@ -176,26 +177,10 @@ fun ProfileScreen(
                     onClick = { onChangeTheme(ThemeMode.Dark) },
                     modifier = Modifier.weight(1f)
                 )
-                ThemeCard(
-                    title = "Custom",
-                    emoji = "🎨",
-                    selected = currentTheme == ThemeMode.Custom,
-                    onClick = { onChangeTheme(ThemeMode.Custom) },
-                    modifier = Modifier.weight(1f)
-                )
+                Spacer(Modifier.weight(0.2f))
             }
 
-            Spacer(Modifier.height(28.dp))
-
-            // Preferences
-            Text("Preferences", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(12.dp))
-
-            PrefRow("🔔 Notifications")
-            PrefRow("🔒 Privacy Settings")
-            PrefRow("🌐 Language")
-
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(40.dp))
 
             // Save button fixed
             Button(
@@ -229,8 +214,16 @@ private fun ThemeCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val bg = if (selected) Color(0xFFFFF3B0) else MaterialTheme.colorScheme.surfaceVariant
+    val bg = if (selected)
+        MaterialTheme.colorScheme.primaryContainer
+    else
+        MaterialTheme.colorScheme.surfaceVariant
+
     val stroke = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
+    val textColor = if (selected)
+        MaterialTheme.colorScheme.onPrimaryContainer
+    else
+        MaterialTheme.colorScheme.onSurface
 
     Surface(
         onClick = onClick,
@@ -247,25 +240,14 @@ private fun ThemeCard(
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(emoji, style = MaterialTheme.typography.headlineMedium)
-            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(emoji, style = MaterialTheme.typography.headlineMedium, color = textColor)
+            Text(title, style = MaterialTheme.typography.bodyMedium.copy(color = textColor))
         }
     }
 }
 
 @Composable
 private fun PrefRow(text: String) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text, style = MaterialTheme.typography.bodyLarge)
-        }
-    }
-    Spacer(Modifier.height(12.dp))
+    // No-op placeholder (kept only if referenced elsewhere). Not used anymore.
 }
+
