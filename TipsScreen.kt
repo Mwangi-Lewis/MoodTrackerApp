@@ -13,10 +13,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 
 @Composable
 fun TipsScreen(
@@ -25,7 +25,8 @@ fun TipsScreen(
     onSchoolCounsellor: () -> Unit = {},
     onSafeSpace: () -> Unit = {}
 ) {
-    val bg = Color(0xFFF9F7FB)
+    val bg = MaterialTheme.colorScheme.background
+    val textColor = MaterialTheme.colorScheme.onBackground
 
     Scaffold(
         containerColor = bg,
@@ -33,13 +34,10 @@ fun TipsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .statusBarsPadding()               // <-- keeps out of system bar
+                    .statusBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
-                // Back row (now safely below status bar)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = onBack,
                         modifier = Modifier.size(32.dp)
@@ -47,21 +45,20 @@ fun TipsScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
                             contentDescription = "Back",
-                            tint = Color(0xFF151515)
+                            tint = textColor
                         )
                     }
                     Spacer(Modifier.width(2.dp))
                     Text(
                         text = "Back",
                         style = MaterialTheme.typography.bodyMedium.copy(
-                            color = Color(0xFF151515)
+                            color = textColor
                         )
                     )
                 }
 
                 Spacer(Modifier.height(8.dp))
 
-                // Gradient header "Tips"
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -93,7 +90,6 @@ fun TipsScreen(
 
             Spacer(Modifier.height(16.dp))
 
-            // Card 1 - Quick grounding
             TipCard(
                 emoji = "💡",
                 title = "Quick grounding",
@@ -102,7 +98,6 @@ fun TipsScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            // Card 2 - Write it out (navigates to LogMoodScreen)
             TipCard(
                 emoji = "❤️",
                 title = "Write it out",
@@ -112,7 +107,6 @@ fun TipsScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            // Card 3 - Need to talk to someone now?
             HelpCard(
                 onSchoolCounsellor = onSchoolCounsellor,
                 onSafeSpace = onSafeSpace
@@ -131,11 +125,12 @@ private fun TipCard(
     onClick: (() -> Unit)? = null
 ) {
     val shape = RoundedCornerShape(24.dp)
+
     Surface(
         onClick = { onClick?.invoke() },
         enabled = onClick != null,
         shape = shape,
-        color = Color.White,
+        color = MaterialTheme.colorScheme.surface,
         shadowElevation = 6.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -143,24 +138,21 @@ private fun TipCard(
             modifier = Modifier.padding(20.dp),
             verticalAlignment = Alignment.Top
         ) {
-            Text(
-                text = emoji,
-                fontSize = 26.sp,
-                modifier = Modifier.padding(end = 16.dp)
-            )
+            Text(text = emoji, fontSize = 26.sp, modifier = Modifier.padding(end = 16.dp))
+
             Column {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF222222)
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = body,
                     style = MaterialTheme.typography.bodyMedium.copy(
-                        color = Color(0xFF6B6B6B)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 )
             }
@@ -174,27 +166,31 @@ private fun HelpCard(
     onSafeSpace: () -> Unit
 ) {
     val shape = RoundedCornerShape(24.dp)
+
     Surface(
         shape = shape,
-        color = Color.White,
+        color = MaterialTheme.colorScheme.surface,
         shadowElevation = 6.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
+
         Column(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+
             Text(
                 text = "Need to talk to someone now?",
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF222222)
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             )
+
             Text(
                 text = "Add a direct link to your school counsellor or a trusted person.",
                 style = MaterialTheme.typography.bodyMedium.copy(
-                    color = Color(0xFF6B6B6B)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             )
 
@@ -206,27 +202,15 @@ private fun HelpCard(
             ) {
                 Button(
                     onClick = onSchoolCounsellor,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF506BFF),
-                        contentColor = Color.White
-                    )
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = RoundedCornerShape(18.dp)
                 ) {
                     Text("School Counsellor")
                 }
                 Button(
                     onClick = onSafeSpace,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF28A876),
-                        contentColor = Color.White
-                    )
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = RoundedCornerShape(18.dp)
                 ) {
                     Text("Safe Space")
                 }
