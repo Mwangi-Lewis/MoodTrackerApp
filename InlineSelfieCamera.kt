@@ -27,7 +27,39 @@ import java.io.ByteArrayOutputStream
 import kotlin.math.max
 import kotlin.math.min
 
+// ===== NEW imports for networking & coroutines =====
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import retrofit2.http.Multipart
+import retrofit2.http.POST
+import retrofit2.http.Part
+
+// ───────────────────────── Constants / API ─────────────────────────
+
 private const val TAG = "InlineSelfie"
+
+
+// Response from FastAPI backend
+data class FerEmotionResponse(
+    val emotion: String,
+    val score: Float
+)
+
+// Retrofit API talking to /detect
+interface FerApi {
+    @Multipart
+    @POST("detect")
+    suspend fun detectEmotion(
+        @Part file: MultipartBody.Part
+    ): FerEmotionResponse
+}
+
+
 
 // ───────────────────────── Public composable ─────────────────────────
 
@@ -38,13 +70,18 @@ fun InlineSelfieCamera(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+
+    val ferApi = ApiProvider.ferApi            
+    val chatApi = ApiProvider.chatApi           
+
 
     // Request camera permission once
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (!granted) {
-            // if denied, just close for now
             onClose()
         }
     }
@@ -52,11 +89,7 @@ fun InlineSelfieCamera(
         permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    // Emotion classifier
-    val classifier = remember { EmotionClassifier(context) }
-    DisposableEffect(Unit) { onDispose { classifier.close() } }
-
-    // ML Kit face detector
+    // ML Kit face detector (keep it alive for the whole composable lifetime)
     val faceDetector = remember {
         val options = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
@@ -67,7 +100,7 @@ fun InlineSelfieCamera(
             .build()
         FaceDetection.getClient(options)
     }
-    DisposableEffect(Unit) { onDispose { faceDetector.close() } }
+
 
     var status by remember { mutableStateOf("Looking for your face…") }
     var latestMood by remember { mutableStateOf<String?>(null) }
@@ -87,9 +120,9 @@ fun InlineSelfieCamera(
                     .fillMaxWidth()
                     .height(320.dp),
                 faceDetector = faceDetector,
-                classifier = classifier,
+                ferApi = ferApi,
+                scope = scope,
                 onFaceEmotion = { mood, conf ->
-                    // Called only when a face AND prediction exist
                     hasFace = true
                     latestMood = mood
                     latestConf = conf
@@ -129,12 +162,16 @@ fun InlineSelfieCamera(
 private fun CameraPreviewInline(
     modifier: Modifier,
     faceDetector: FaceDetector,
-    classifier: EmotionClassifier,
+    ferApi: FerApi,
+    scope: CoroutineScope,
     onFaceEmotion: (mood: String, conf: Float) -> Unit,
     onNoFace: () -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    // prevent spamming backend; only one request at a time
+    val inFlight = remember { mutableStateOf(false) }
 
     AndroidView(
         modifier = modifier,
@@ -171,11 +208,14 @@ private fun CameraPreviewInline(
 
                     val converter = YuvToRgbConverter(ctx)
 
-                    var lastSuccessTs = 0L
+                    var lastFaceTs = 0L
 
                     analysis.setAnalyzer(executor) { proxy ->
+                        Log.d(TAG, "Analyzer frame received")  // <── new log
+
                         val media = proxy.image
                         if (media == null) {
+                            Log.d(TAG, "proxy.image == null")
                             proxy.close()
                             return@setAnalyzer
                         }
@@ -185,14 +225,17 @@ private fun CameraPreviewInline(
 
                         faceDetector.process(image)
                             .addOnSuccessListener { faces ->
+                                Log.d(TAG, "faceDetector success, faces=${faces.size}") // <── new log
+
                                 if (faces.isNotEmpty()) {
-                                    // basic throttle: only classify every ~400ms
                                     val now = System.currentTimeMillis()
-                                    if (now - lastSuccessTs < 400L) {
-                                        // still considered "face found"; don't spam onNoFace
+                                    lastFaceTs = now
+
+                                    // Don't send another request if one is already in-flight
+                                    if (inFlight.value) {
+                                        Log.d(TAG, "Request already in-flight, skipping frame")
                                         return@addOnSuccessListener
                                     }
-                                    lastSuccessTs = now
 
                                     val face = faces.first()
                                     try {
@@ -201,19 +244,34 @@ private fun CameraPreviewInline(
                                         val faceBitmap =
                                             cropFace(frameBitmap, face.boundingBox)
 
-                                        val (label, conf) = classifier.classify(faceBitmap)
-                                        Log.d(TAG, "Face ok -> $label ($conf)")
-                                        onFaceEmotion(label, conf)
+                                        Log.d(TAG, "Sending face to FER backend…")
+                                        sendFaceToFer(
+                                            scope = scope,
+                                            api = ferApi,
+                                            faceBitmap = faceBitmap,
+                                            onSuccess = { mood, score ->
+                                                inFlight.value = false
+                                                onFaceEmotion(mood, score)
+                                            },
+                                            onError = {
+                                                inFlight.value = false
+                                                onNoFace()
+                                            }
+                                        )
+                                        inFlight.value = true
                                     } catch (e: Exception) {
-                                        Log.w(TAG, "Crop/classify failed: ${e.message}", e)
+                                        Log.w(TAG, "Crop or send failed: ${e.message}", e)
                                         onNoFace()
                                     }
                                 } else {
-                                    onNoFace()
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastFaceTs > 600L) {
+                                        onNoFace()
+                                    }
                                 }
                             }
                             .addOnFailureListener { e ->
-                                Log.w(TAG, "Detector error: ${e.message}", e)
+                                Log.e(TAG, "Detector error", e)  // <── error log
                                 onNoFace()
                             }
                             .addOnCompleteListener {
@@ -237,6 +295,41 @@ private fun CameraPreviewInline(
     )
 }
 
+private fun sendFaceToFer(
+    scope: CoroutineScope,
+    api: FerApi,
+    faceBitmap: Bitmap,
+    onSuccess: (String, Float) -> Unit,
+    onError: () -> Unit
+) {
+    scope.launch(Dispatchers.IO) {
+        try {
+            val baos = ByteArrayOutputStream()
+            faceBitmap.compress(Bitmap.CompressFormat.JPEG, 90, baos)
+            val bytes = baos.toByteArray()
+
+            val body = bytes.toRequestBody("image/jpeg".toMediaType())
+            val part = MultipartBody.Part.createFormData(
+                name = "file",
+                filename = "frame.jpg",
+                body = body
+            )
+
+            Log.d(TAG, "Calling FER backend…")   // <── new log
+            val resp = api.detectEmotion(part)
+            Log.d(TAG, "FER response: ${resp.emotion} (${resp.score})")  // <── new log
+
+            withContext(Dispatchers.Main) {
+                onSuccess(resp.emotion, resp.score)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "FER HTTP error", e)  // <── error log with stacktrace
+            withContext(Dispatchers.Main) {
+                onError()
+            }
+        }
+    }
+}
 // ─────────────────────── Helpers: YUV → Bitmap, crop ───────────────────────
 
 private class YuvToRgbConverter(private val context: Context) {
